@@ -341,41 +341,7 @@ function toolMomentumDetect(overData) {
 // ─────────────────────────────────────────────────────────────────
 async function callClaude(systemPrompt, userPrompt, apiKey) {
   if (!apiKey) {
-    const findTeams = (text) => {
-      const roastMatch = text.match(/Roast (.+?) from a (.+?) fan/i);
-      if (roastMatch) return { teamOpp: roastMatch[1], teamUser: roastMatch[2] };
-      const battleMatch = text.match(/fans of (.+?) and (.+?)\./i);
-      if (battleMatch) return { teamUser: battleMatch[1], teamOpp: battleMatch[2] };
-      return {};
-    };
-
-    const teams = findTeams(userPrompt) || findTeams(systemPrompt) || {};
-    const oppName = teams.teamOpp || "Chennai Super Kings";
-    const userName = teams.teamUser || "Mumbai Indians";
-
-    // Mock response for demo purposes
-    if (userPrompt.includes("Analyze this IPL situation")) {
-      return `Pressure is high due to the required run rate and wickets remaining. Momentum shifted negatively in the last over with low scoring. ${oppName} needs to accelerate while preserving wickets.`;
-    } else if (userPrompt.includes("Roast")) {
-      return `Oh ${oppName}, you're like that one ex who keeps showing up uninvited. Remember that playoff choke in 2019? Yeah, we're still laughing. FACTCHECK_JSON:{"valid":true,"reason":"Referencing the 2019 IPL playoffs where they lost a crucial match."}`;
-    } else if (userPrompt.includes("roast battle")) {
-      return `🏟️ ROUND 1 — OPENING SALVOS (friendly jabs)
-${userName} FAN: You guys are like the IPL's participation trophy winners.
-${oppName} FAN: At least we show up; you just dream about trophies.
-
-🏟️ ROUND 2 — ESCALATION (real stats, history, specific seasons)
-${userName} FAN: 5 titles and counting, while you've choked in finals more times than we can count.
-${oppName} FAN: Your 'royalty' status is just a facade; Dhoni carried you for years.
-
-🏟️ ROUND 3 — KNOCKOUT (full savage, specific match references, no mercy)
-${userName} FAN: That 2019 final loss to ${oppName}? Still hurts, doesn't it? And your 2023 playoff exit was embarrassing.
-${oppName} FAN: Your 2022 season was a disaster; your stars couldn't save you from mediocrity.
-
-🏆 JUDGE'S VERDICT: ${userName} wins by a knockout — their historical dominance and recent form prove too much for ${oppName}'s excuses.`;
-    } else if (userPrompt.includes("Verify this claim")) {
-      return `FALSE. The correct fact is that RCB has won 0 IPL titles despite having Virat Kohli for 15 seasons. They reached the finals in 2016 but lost.`;
-    }
-    return "Mock response: This is a demo without API key.";
+    throw new Error("API Key is required");
   }
   const res = await fetch(ANTHROPIC_URL, {
     method: "POST",
@@ -459,13 +425,34 @@ ${memCtx ? "Context: " + memCtx : ""}`;
 
 // Tool 6 — Fact Checker
 async function toolFactCheck(claim, apiKey) {
-  const sys = `You are a precise cricket/IPL fact-checker with encyclopedic knowledge.
-Start your response with TRUE or FALSE (all caps, first word).
-Then in 2-3 sentences: state what the real fact is, cite the specific correct stat/match/year if applicable.`;
+  try {
+    console.log("🔍 Fact-checking claim:", claim);
 
-  const raw  = await callClaude(sys, `Verify this claim: "${claim}"`, apiKey);
-  const valid = raw.trimStart().toUpperCase().startsWith("TRUE");
-  return { valid, reason: raw };
+    // Call backend API
+    const response = await fetch("http://localhost:5000/api/fact-check", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ claim }),
+    });
+
+    const data = await response.json();
+    console.log("✅ Backend response:", data);
+
+    return { 
+      valid: data.valid, 
+      reason: data.reason,
+      claim: data.claim 
+    };
+  } catch (error) {
+    console.error("❌ Fact-check error:", error);
+    return {
+      valid: false,
+      reason: `Error: ${error.message}. Make sure backend server is running on http://localhost:5000`,
+      claim: claim
+    };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -568,7 +555,11 @@ async function orchestratorAgent(input, memory, onStep) {
   think(`🎯 Orchestrator: all tools executed | Memory updated`);
 
   // ── Update memory ──
-  memory.add({ task: input.task, teamUser: input.teamUser, teamOpp: input.teamOpp });
+  if (input.task === "fact-check") {
+    memory.add({ task: input.task, claim: input.claim });
+  } else {
+    memory.add({ task: input.task, teamUser: input.teamUser, teamOpp: input.teamOpp });
+  }
 
   return { thinking: { steps }, result };
 }
@@ -678,6 +669,10 @@ export default function CricketIntelligenceAgent() {
         setSteps
       );
       setResult(res);
+      // Clear claim after fact-check execution
+      if (task === "fact-check") {
+        setClaim("");
+      }
     } catch (err) {
       setSteps(prev => [...prev, `❌ Error: ${err.message}`]);
     } finally {
@@ -745,7 +740,17 @@ export default function CricketIntelligenceAgent() {
                 {TASKS.map(t => (
                   <button key={t.id}
                     className={`task-btn ${task === t.id ? "active" : ""}`}
-                    onClick={() => { setTask(t.id); setResult(null); setSteps([]); }}>
+                    onClick={() => {
+                      setTask(t.id);
+                      setResult(null);
+                      setSteps([]);
+                      // Clear irrelevant fields when switching tasks
+                      if (t.id === "fact-check") {
+                        setClaim("");  // Clear claim if leaving fact-check
+                      } else {
+                        setClaim("");  // Clear claim if leaving fact-check
+                      }
+                    }}>
                     <div className="task-btn-label">{t.emoji} {t.label}</div>
                     <div className="task-btn-desc">{t.desc}</div>
                   </button>
