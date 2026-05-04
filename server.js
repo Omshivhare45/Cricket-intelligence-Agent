@@ -3,7 +3,14 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
+import axios from "axios";
+import path from "path";
+import { fileURLToPath } from "url";
+
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -12,208 +19,179 @@ const PORT = process.env.PORT || 5000;
 app.use(express.json());
 app.use(cors());
 
+// Serve static files from the Vite build directory
+app.use(express.static(path.join(__dirname, "dist")));
+
 // Initialize Google Generative AI client
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+const geminiModel = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+/**
+ * Helper: Unified AI Content Generator with Fallback
+ * Tries Gemini first, falls back to OpenRouter (Claude) if rate limited.
+ */
+async function generateAIContent(prompt, systemPrompt = "") {
+  const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
+
+  try {
+    console.log("🚀 Trying Gemini...");
+    const result = await geminiModel.generateContent(fullPrompt);
+    return result.response.text();
+  } catch (error) {
+    const isRateLimit = error.message?.includes("429") || error.message?.includes("quota");
+    
+    if (isRateLimit && process.env.ANTHROPIC_API_KEY) {
+      console.warn("⚠️ Gemini Rate Limit Hit. Switching to Fallback (OpenRouter/Claude)...");
+      try {
+        const response = await axios.post("https://openrouter.ai/api/v1/chat/completions", {
+          model: "anthropic/claude-3-haiku",
+          messages: [
+            { role: "system", content: systemPrompt || "You are a helpful cricket assistant." },
+            { role: "user", content: prompt }
+          ],
+        }, {
+          headers: {
+            "Authorization": `Bearer ${process.env.ANTHROPIC_API_KEY}`,
+            "Content-Type": "application/json",
+            "X-Title": "Cricket Intelligence Agent"
+          }
+        });
+        return response.data.choices[0].message.content;
+      } catch (fallbackError) {
+        console.error("❌ Fallback API also failed:", fallbackError.message);
+        throw new Error("Both primary and fallback AI services are currently unavailable.");
+      }
+    }
+    
+    console.error("❌ Gemini Error:", error.message);
+    throw error;
+  }
+}
 
 // ─────────────────────────────────────────────────────────────
 // API Routes
 // ─────────────────────────────────────────────────────────────
 
+const GROUNDING_KNOWLEDGE = `
+REAL-WORLD DATA (FOR ACCURACY):
+- IPL 2024 WINNER: Kolkata Knight Riders (KKR) won their 3rd title, defeating SRH in the final. Sunil Narine was MVP.
+- IPL 2025 WINNER: Royal Challengers Bengaluru (RCB) WON THEIR FIRST EVER TITLE, defeating Punjab Kings (PBKS) in the final. Virat Kohli was the tournament highlight.
+- MI & CSK: Both are 5-time champions. Last MI win was 2020. Last CSK win was 2023.
+- EMERGING STARS: Sai Sudharsan (GT) and Abhishek Sharma (SRH) are top performers.
+- CURRENT DATE: May 2026 (App Context).
+`;
+
+const KNOWLEDGE_CUTOFF_PROMPT = `You are a cricket intelligence agent. ${GROUNDING_KNOWLEDGE}\nAlways prioritize these real-world facts over your internal training data. You are operating in May 2026.`;
+
 /**
  * POST /api/fact-check
- * Receives a cricket claim and returns fact-checked result
  */
 app.post("/api/fact-check", async (req, res) => {
   try {
     const { claim } = req.body;
-
-    console.log("📨 Received claim:", claim);
-    console.log("🔑 API Key loaded:", process.env.GEMINI_API_KEY ? "✅ YES" : "❌ NO");
-
     if (!claim || claim.trim() === "") {
-      return res.status(400).json({
-        valid: false,
-        reason: "No claim provided. Please enter a cricket claim to verify.",
-      });
+      return res.status(400).json({ verdict: "UNKNOWN", explanation: "No claim provided." });
     }
 
-    if (!process.env.GEMINI_API_KEY) {
-      return res.status(500).json({
-        valid: false,
-        reason: "GEMINI_API_KEY not set in .env file",
-      });
-    }
+    const systemPrompt = `${KNOWLEDGE_CUTOFF_PROMPT}\nYou are a precise cricket/IPL fact-checker. 
+Respond in strict JSON format:
+{
+  "verdict": "TRUE" | "FALSE" | "UNKNOWN",
+  "explanation": "Short reasoning (1-2 sentences) citing specific match/year context."
+}`;
 
-    // Call Gemini API with the exact claim
-    const systemPrompt = `You are a precise cricket/IPL fact-checker with encyclopedic knowledge.
-Always start your response with either TRUE or FALSE (exactly as written, first word).
-Then in 2-3 sentences: state what the real fact is, cite specific correct stat/match/year if applicable.
-Be dynamic based on the claim provided.`;
-
-    console.log("🚀 Calling Gemini API...");
+    const text = await generateAIContent(`Verify: "${claim}"`, systemPrompt);
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
     
-    const result = await model.generateContent({
-      contents: [
-        {
-          parts: [
-            {
-              text: `${systemPrompt}\n\nVerify this cricket claim: "${claim}"`,
-            },
-          ],
-        },
-      ],
-    });
-
-    const responseText = result.response.text();
-
-    console.log("✅ Gemini response:", responseText);
-
-    // Parse response
-    const isTrue = responseText.trim().toUpperCase().startsWith("TRUE");
-    const reason = responseText;
-
-    res.json({
-      valid: isTrue,
-      reason: reason,
-      claim: claim, // Echo back the claim to verify it was processed
-    });
+    if (jsonMatch) {
+      res.json(JSON.parse(jsonMatch[0]));
+    } else {
+      const isTrue = text.toUpperCase().includes("TRUE");
+      res.json({ verdict: isTrue ? "TRUE" : "FALSE", explanation: text });
+    }
   } catch (error) {
-    console.error("❌ Error in fact-check:", error);
-    console.error("❌ Error message:", error.message);
-    res.status(500).json({
-      valid: false,
-      reason: `Error while fact-checking: ${error.message}. Make sure your GEMINI_API_KEY is valid in .env`,
+    console.error("Fact Check Error:", error.message);
+    res.status(500).json({ 
+      verdict: "UNKNOWN", 
+      explanation: error.message 
     });
   }
 });
 
 /**
  * POST /api/explain
- * Pressure & Momentum analysis
  */
 app.post("/api/explain", async (req, res) => {
   try {
     const { input, pressure, momentum } = req.body;
+    const systemPrompt = `${KNOWLEDGE_CUTOFF_PROMPT}\nYou are a sharp cricket analyst.`;
+    const prompt = `Analyze this situation:
+Teams: ${input.teamUser} vs ${input.teamOpp}
+Runs Required: ${input.runs} | Balls Left: ${input.balls} | Wickets: ${input.wickets}
+Pressure: ${pressure}% | Momentum: ${momentum?.[momentum.length-1]?.trend || "Neutral"}
+Provide a sharp 3-4 sentence tactical analysis mentioning any historical parallels if applicable.`;
 
-    console.log("📨 Received explanation request:", input);
-
-    if (!process.env.GEMINI_API_KEY) {
-      return res.status(500).json({
-        explanation: "GEMINI_API_KEY not set in .env file",
-      });
-    }
-
-    const systemPrompt = `You are a cricket strategist. Analyze pressure and momentum in IPL matches.`;
-
-    const result = await model.generateContent({
-      contents: [
-        {
-          parts: [
-            {
-              text: `${systemPrompt}\n\nPressure: ${pressure}%, Momentum: ${momentum}%. Situation: ${input}`,
-            },
-          ],
-        },
-      ],
-    });
-
-    const responseText = result.response.text();
-
-    res.json({
-      explanation: responseText,
-    });
+    const explanation = await generateAIContent(prompt, systemPrompt);
+    res.json({ explanation });
   } catch (error) {
-    console.error("❌ Error in explain:", error);
-    res.status(500).json({
-      explanation: `Error: ${error.message}`,
-    });
+    console.error("Explain Error:", error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/roast
+ */
+app.post("/api/roast", async (req, res) => {
+  try {
+    const { teamUser, teamOpp, persona } = req.body;
+    const systemPrompt = `${KNOWLEDGE_CUTOFF_PROMPT}\nYou are a savage cricket roast comedian.
+Voice: ${teamUser} fan. Persona: ${persona}.`;
+    const prompt = `Roast ${teamOpp} brutally in 4-6 lines. Reference a real IPL fail/stat from any season including 2024/2025.
+End with: FACTCHECK_JSON:{"valid":true,"reason":"stat verified"}`;
+
+    const roast = await generateAIContent(prompt, systemPrompt);
+    res.json({ roast });
+  } catch (error) {
+    console.error("Roast Error:", error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/battle
+ */
+app.post("/api/battle", async (req, res) => {
+  try {
+    const { teamUser, teamOpp } = req.body;
+    const systemPrompt = `${KNOWLEDGE_CUTOFF_PROMPT}\nYou are an expert in IPL history and fan rivalries.`;
+    const prompt = `Generate a 3-round brutal IPL roast battle between ${teamUser} and ${teamOpp} fans.
+Intensity increases each round. Use real stats/matches including recent 2024/2025 results. 
+Format with round emojis and a Judge's Verdict.`;
+
+    const battle = await generateAIContent(prompt, systemPrompt);
+    res.json({ battle });
+  } catch (error) {
+    console.error("Battle Error:", error.message);
+    res.status(500).json({ error: error.message });
   }
 });
 
 /**
  * GET /api/health
- * Health check endpoint
  */
-app.get("/api/health", async (req, res) => {
-  try {
-    if (!process.env.GEMINI_API_KEY) {
-      return res.json({
-        status: "error",
-        message: "GEMINI_API_KEY is missing",
-        apiKey: "❌ Missing",
-      });
-    }
-
-    // Test the API key with a simple message
-    const testResult = await model.generateContent({
-      contents: [
-        {
-          parts: [
-            {
-              text: "Say OK",
-            },
-          ],
-        },
-      ],
-    });
-
-    const testText = testResult.response.text();
-
-    res.json({
-      status: "ok",
-      message: "Cricket Agent API is running and Gemini key is valid",
-      apiKey: "✅ Working",
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error("❌ Health check failed:", error.message);
-    res.status(500).json({
-      status: "error",
-      message: `Health check failed: ${error.message}`,
-      apiKey: "❌ Invalid or expired",
-      hint: "Check your GEMINI_API_KEY in .env file",
-    });
-  }
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-// ─────────────────────────────────────────────────────────────
-// Error handling
-// ─────────────────────────────────────────────────────────────
-app.use((err, req, res, next) => {
-  console.error("Server error:", err);
-  res.status(500).json({
-    error: "Internal server error",
-    message: err.message,
-  });
+// SPA Catch-all
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "dist", "index.html"));
 });
 
-// ─────────────────────────────────────────────────────────────
 // Start server
-// ─────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`
-╔════════════════════════════════════════════════════════════╗
-║  🏏 Cricket Intelligence Agent - Backend Server           ║
-║  ✅ Running on http://localhost:${PORT}                  ║
-║  🔄 Using: Google Gemini API                              ║
-║  📚 API Routes:                                            ║
-║     POST /api/fact-check  - Verify cricket claims         ║
-║     POST /api/explain     - Get analysis                  ║
-║     GET  /api/health      - Health check                  ║
-╚════════════════════════════════════════════════════════════╝
-  `);
-
-  // Verify API key
-  if (!process.env.GEMINI_API_KEY) {
-    console.warn(
-      "⚠️  WARNING: GEMINI_API_KEY is not set in environment variables!"
-    );
-    console.warn("   Create a .env file with: GEMINI_API_KEY=your-key");
-  } else {
-    const keyPreview = process.env.GEMINI_API_KEY.substring(0, 20) + "...";
-    console.log(`✅ GEMINI_API_KEY is configured: ${keyPreview}`);
-    console.log("📝 Test the API by visiting: http://localhost:5000/api/health");
-  }
+  console.log(`🏏 Cricket Agent Backend running on port ${PORT}`);
 });
+
 

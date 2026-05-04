@@ -1,25 +1,14 @@
 services:
-  # 🏏 Cricket Intelligence Backend
   - type: web
-    name: cricket-backend
+    name: cricket-intelligence-agent
     env: node
     plan: free
-    rootDir: backend
-    buildCommand: npm install
+    buildCommand: npm install && npm run build
     startCommand: npm start
     envVars:
-      - key: ANTHROPIC_API_KEY
-        sync: false # Set your OpenRouter API Key in Render Dashboard
+      - key: GEMINI_API_KEY
+        sync: false # Set your Gemini API Key in Render Dashboard
       - key: PORT
         value: 10000
-
-  # 🌐 Cricket Intelligence Frontend
-  - type: static
-    name: cricket-frontend
-    env: static
-    plan: free
-    buildCommand: npm install && npm run build
-    publishPath: dist
-    envVars:
-      - key: VITE_BACKEND_URL
-        sync: false # Set this to your Backend URL after it's deployed
+      - key: NODE_ENV
+        value: production
