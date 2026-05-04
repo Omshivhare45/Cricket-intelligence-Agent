@@ -283,7 +283,7 @@ const TEAMS = {
 const TEAM_PERSONAS = {
   MI:   "arrogant Mumbai royalty — 5 trophies, infinite swagger",
   CSK:  "calm Thala devotee — 'trust the process, Dhoni knows'",
-  RCB:  "emotionally destroyed yet still showing up every year",
+  RCB:  "former heartbreaks, now 2025 CHAMPIONS — 'E Sala Cup Namdu' actually happened",
   KKR:  "purple-blooded street-swagger king",
   GT:   "quietly confident new money flexing back-to-back trophies",
   LSG:  "chaotic wildcard who surprises even themselves",
@@ -302,6 +302,7 @@ const TASKS = [
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const CLAUDE_MODEL  = "anthropic/claude-3-haiku";
+const BACKEND_URL   = import.meta.env.VITE_BACKEND_URL || "http://localhost:5000";
 
 // ─────────────────────────────────────────────────────────────────
 //  TOOL 1 — Pressure Calculator (pure function)
@@ -366,24 +367,39 @@ async function callClaude(systemPrompt, userPrompt, apiKey) {
 }
 
 // Tool 3 — Explanation Generator
-async function toolExplain(input, pressure, momentum, memCtx) {
+async function toolExplain(input, pressure, momentum, memCtx, apiKey) {
   try {
-    const res = await fetch("http://localhost:5000/api/explain", {
+    const res = await fetch(`${BACKEND_URL}/api/explain`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ input, pressure, momentum, memCtx }),
     });
-    const data = await res.json();
-    return data.explanation || "Analysis failed.";
+    if (res.ok) {
+      const data = await res.json();
+      return data.explanation;
+    }
   } catch (err) {
-    return "Error connecting to analysis engine.";
+    console.warn("Backend explanation failed, trying client-side fallback...");
   }
+
+  // Fallback
+  const sys = `You are a sharp, direct cricket match analyst. Provide insight in exactly 3-4 sentences.
+Use tactical language. No fluff. Explain pressure dynamics and momentum shift causes.
+${memCtx ? "Previous session context: " + memCtx : ""}`;
+
+  const prompt = `Analyze this IPL situation:
+Teams: ${TEAMS[input.teamUser]?.name} vs ${TEAMS[input.teamOpp]?.name}
+Runs Required: ${input.runs || "N/A"} | Balls Left: ${input.balls || "N/A"} | Wickets in Hand: ${input.wickets || "N/A"}
+Computed Pressure Score: ${pressure ?? "N/A"}/100
+Explain WHY pressure is at this level, what caused any momentum shift, and what needs to happen next.`;
+
+  return callClaude(sys, prompt, apiKey);
 }
 
 // Tool 4 — Cheer Bot / Roast Generator
-async function toolCheerBot(teamUser, teamOpp, memCtx) {
+async function toolCheerBot(teamUser, teamOpp, memCtx, apiKey) {
   try {
-    const res = await fetch("http://localhost:5000/api/roast", {
+    const res = await fetch(`${BACKEND_URL}/api/roast`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ 
@@ -393,17 +409,28 @@ async function toolCheerBot(teamUser, teamOpp, memCtx) {
         persona: TEAM_PERSONAS[teamUser]
       }),
     });
-    const data = await res.json();
-    return data.roast || "Roast failed.";
+    if (res.ok) {
+      const data = await res.json();
+      return data.roast;
+    }
   } catch (err) {
-    return "Error connecting to roast engine.";
+    console.warn("Backend roast failed, trying client-side fallback...");
   }
+
+  // Fallback
+  const sys = `You are a savage cricket roast comedian.
+VOICE: You ARE a ${TEAMS[teamUser]?.name} fan. Persona: "${TEAM_PERSONAS[teamUser]}".
+ROAST: Write exactly 4–6 punchy lines. MUST reference a real IPL match/season/stat.
+Then output on a final line: FACTCHECK_JSON:{"valid":true,"reason":"reasoning"}`;
+
+  const prompt = `Roast ${TEAMS[teamOpp]?.name} from a ${TEAMS[teamUser]?.name} fan's perspective.`;
+  return callClaude(sys, prompt, apiKey);
 }
 
 // Tool 5 — Roast Battle Engine
-async function toolRoastBattle(teamUser, teamOpp, memCtx) {
+async function toolRoastBattle(teamUser, teamOpp, memCtx, apiKey) {
   try {
-    const res = await fetch("http://localhost:5000/api/battle", {
+    const res = await fetch(`${BACKEND_URL}/api/battle`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ 
@@ -412,38 +439,56 @@ async function toolRoastBattle(teamUser, teamOpp, memCtx) {
         memCtx 
       }),
     });
-    const data = await res.json();
-    return data.battle || "Battle failed.";
+    if (res.ok) {
+      const data = await res.json();
+      return data.battle;
+    }
   } catch (err) {
-    return "Error connecting to battle engine.";
+    console.warn("Backend battle failed, trying client-side fallback...");
   }
+
+  // Fallback
+  const sys = `Run a FULL 3-round IPL roast battle between fans of ${TEAMS[teamUser]?.name} and ${TEAMS[teamOpp]?.name}.
+Use real IPL matches, years, scores. Reference actual player names.
+Both teams get equal roast quality — make it fair but brutal.`;
+
+  return callClaude(sys, "Generate the full roast battle.", apiKey);
 }
 
-// Tool 6 — Fact Checker (Backend Integration)
-async function toolFactCheck(claim) {
+// Tool 6 — Fact Checker
+async function toolFactCheck(claim, apiKey) {
   try {
-    const res = await fetch("http://localhost:5000/api/fact-check", {
+    const res = await fetch(`${BACKEND_URL}/api/fact-check`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ claim }),
     });
     
-    if (!res.ok) throw new Error("Backend server not responding");
-    
-    const data = await res.json();
-    return { 
-      valid: data.verdict === "TRUE", 
-      verdict: data.verdict, 
-      reason: data.explanation 
-    };
+    if (res.ok) {
+      const data = await res.json();
+      return { 
+        valid: data.verdict === "TRUE", 
+        verdict: data.verdict, 
+        reason: data.explanation 
+      };
+    }
   } catch (err) {
-    console.error("Fact Check Error:", err);
-    return { 
-      valid: false, 
-      verdict: "UNKNOWN", 
-      reason: "Could not reach the fact-checking backend. Ensure it is running on port 5000." 
-    };
+    console.warn("Backend fact-check failed, trying client-side fallback...");
   }
+
+  // Fallback
+  const sys = `You are a precise cricket/IPL fact-checker. 
+Start your response with TRUE or FALSE.
+Then in 2 sentences: state the real fact with match/year.
+If unclear, start with UNKNOWN.`;
+
+  const raw = await callClaude(sys, `Verify this claim: "${claim}"`, apiKey);
+  const verdict = raw.toUpperCase().startsWith("TRUE") ? "TRUE" : raw.toUpperCase().startsWith("FALSE") ? "FALSE" : "UNKNOWN";
+  return { 
+    valid: verdict === "TRUE", 
+    verdict, 
+    reason: raw 
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -502,9 +547,9 @@ async function orchestratorAgent(input, memory, onStep) {
 
   // ── Tool 3: Explanation Generator ──
   if (input.task === "analyze") {
-    think(`⚙️  Tool 3: Explanation Generator (Backend) — analyzing tactical situation`);
-    result.explanation = await toolExplain(input, result.pressure, result.momentum, memCtx);
-    think(`✅ Analysis generated — tactical explanation ready`);
+    think(`⚙️  Tool 3: Explanation Generator — analyzing tactical situation`);
+    result.explanation = await toolExplain(input, result.pressure, result.momentum, memCtx, input.apiKey);
+    think(`✅ Analysis ready`);
   }
 
   // ── Tool 4: Cheer Bot ──
@@ -515,7 +560,7 @@ async function orchestratorAgent(input, memory, onStep) {
     think(`      ↳ Step 3: Selecting sharpest attack angle`);
     think(`      ↳ Step 4: Crafting 4–6 line roast with real stat reference`);
 
-    const raw     = await toolCheerBot(input.teamUser, input.teamOpp, memCtx);
+    const raw     = await toolCheerBot(input.teamUser, input.teamOpp, memCtx, input.apiKey);
     const fcMatch = raw.match(/FACTCHECK_JSON:\s*(\{[\s\S]*?\})/);
     result.roast  = fcMatch ? raw.replace(/FACTCHECK_JSON:[\s\S]*/, "").trim() : raw;
 
@@ -528,18 +573,15 @@ async function orchestratorAgent(input, memory, onStep) {
 
   // ── Tool 5: Roast Battle ──
   if (input.task === "battle") {
-    think(`⚙️  Tool 5: Roast Battle Engine (Backend) — 3-round escalation protocol`);
-    think(`      ↳ Round 1 loading: opening salvos`);
-    think(`      ↳ Round 2 loading: stat-backed counter-attacks`);
-    think(`      ↳ Round 3 loading: full savage knockout mode`);
-    result.battle = await toolRoastBattle(input.teamUser, input.teamOpp, memCtx);
-    think(`✅ Battle complete — judge's verdict rendered`);
+    think(`⚙️  Tool 5: Roast Battle Engine — 3-round escalation protocol`);
+    result.battle = await toolRoastBattle(input.teamUser, input.teamOpp, memCtx, input.apiKey);
+    think(`✅ Battle complete`);
   }
 
   // ── Tool 6: Fact Checker (standalone) ──
   if (input.task === "fact-check") {
-    think(`⚙️  Tool 6: Fact Checker (Backend) — cross-referencing knowledge base`);
-    result.factCheck = await toolFactCheck(input.claim || "");
+    think(`⚙️  Tool 6: Fact Checker — cross-referencing knowledge base`);
+    result.factCheck = await toolFactCheck(input.claim || "", input.apiKey);
     const v = result.factCheck.verdict;
     think(`✅ Fact check: ${v === "TRUE" ? "TRUE ✅" : v === "FALSE" ? "FALSE ❌" : "UNKNOWN ❓"}`);
   }
