@@ -216,6 +216,7 @@ const CSS = `
   }
   .badge-ok   { background:rgba(0,230,118,.12); color:var(--green); border:1px solid var(--green); }
   .badge-warn { background:rgba(230,57,70,.12);  color:var(--red);   border:1px solid var(--red); }
+  .badge-neutral { background:rgba(107,107,138,.12); color:var(--muted); border:1px solid var(--muted); }
 
   /* ── Memory ── */
   .mem-item {
@@ -299,8 +300,8 @@ const TASKS = [
   { id: "fact-check",  emoji: "✅", label: "FACT CHECK",  desc: "Verify claims"       },
 ];
 
-const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
-const CLAUDE_MODEL  = "claude-sonnet-4-20250514";
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const CLAUDE_MODEL  = "anthropic/claude-3-haiku";
 
 // ─────────────────────────────────────────────────────────────────
 //  TOOL 1 — Pressure Calculator (pure function)
@@ -341,116 +342,106 @@ function toolMomentumDetect(overData) {
 // ─────────────────────────────────────────────────────────────────
 async function callClaude(systemPrompt, userPrompt, apiKey) {
   if (!apiKey) {
-    throw new Error("API Key is required");
+    throw new Error("Anthropic API Key is required. Please enter it in the header.");
   }
-  const res = await fetch(ANTHROPIC_URL, {
+  const res = await fetch(OPENROUTER_URL, {
     method: "POST",
     headers: { 
       "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01"
+      "Authorization": `Bearer ${apiKey}`,
+      "HTTP-Referer": "http://localhost:5173",
+      "X-Title": "Cricket Intelligence Agent"
     },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
-      max_tokens: 1000,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
     }),
   });
   const data = await res.json();
   if (data.error) throw new Error(data.error.message);
-  return data.content?.[0]?.text || "";
+  return data.choices?.[0]?.message?.content || "";
 }
 
 // Tool 3 — Explanation Generator
-async function toolExplain(input, pressure, momentum, memCtx, apiKey) {
-  const sys = `You are a sharp, direct cricket match analyst. Provide insight in exactly 3-4 sentences.
-Use tactical language. No fluff. Explain pressure dynamics and momentum shift causes.
-${memCtx ? "Previous session context: " + memCtx : ""}`;
-
-  const prompt = `
-Analyze this IPL situation:
-Teams: ${TEAMS[input.teamUser]?.name} vs ${TEAMS[input.teamOpp]?.name}
-Runs Required: ${input.runs || "N/A"} | Balls Left: ${input.balls || "N/A"} | Wickets in Hand: ${input.wickets || "N/A"}
-Computed Pressure Score: ${pressure ?? "N/A"}/100
-Over-by-over runs: ${input.overs?.join(", ") || "N/A"}
-Explain WHY pressure is at this level, what caused any momentum shift, and what needs to happen next.`;
-
-  return callClaude(sys, prompt, apiKey);
-}
-
-// Tool 4 — Cheer Bot / Roast Generator (4-step reasoning chain)
-async function toolCheerBot(teamUser, teamOpp, memCtx, apiKey) {
-  const sys = `You are a savage cricket roast comedian. You MUST reason through these steps:
-
-STEP 1 — PROFILE: List ${TEAMS[teamOpp]?.name}'s real IPL weaknesses — trophy droughts, choke moments, embarrassing losses, stat fails.
-STEP 2 — VOICE: You ARE a ${TEAMS[teamUser]?.name} fan. Your persona: "${TEAM_PERSONAS[teamUser] || "passionate fan"}". Fully embody this identity.
-STEP 3 — ANGLE: Pick ONE sharp, specific, current weakness to attack.
-STEP 4 — ROAST: Write exactly 4–6 punchy lines. MUST reference a real IPL match/season/stat. End on a mic-drop line.
-
-Then output on a final line: FACTCHECK_JSON:{"valid":true/false,"reason":"what real references were used and whether they are accurate"}
-
-${memCtx ? "Previous context: " + memCtx : ""}`;
-
-  const prompt = `Roast ${TEAMS[teamOpp]?.name} from a ${TEAMS[teamUser]?.name} fan's perspective. Make it savage, creative, and grounded in real IPL history.`;
-  return callClaude(sys, prompt, apiKey);
-}
-
-// Tool 5 — Roast Battle Engine (3 rounds, increasing intensity)
-async function toolRoastBattle(teamUser, teamOpp, memCtx, apiKey) {
-  const sys = `You are a roast battle host. Run a FULL 3-round IPL roast battle between fans of ${TEAMS[teamUser]?.name} and ${TEAMS[teamOpp]?.name}.
-
-FORMAT:
-🏟️ ROUND 1 — OPENING SALVOS (friendly jabs)
-${TEAMS[teamUser]?.emoji} ${TEAMS[teamUser]?.name} FAN: [attack]
-${TEAMS[teamOpp]?.emoji} ${TEAMS[teamOpp]?.name} FAN: [counter]
-
-🏟️ ROUND 2 — ESCALATION (real stats, history, specific seasons)
-[same format — more intense]
-
-🏟️ ROUND 3 — KNOCKOUT (full savage, specific match references, no mercy)
-[same format — maximum intensity]
-
-🏆 JUDGE'S VERDICT: [1-2 sentences declaring winner and why]
-
-RULES:
-- Intensity MUST increase each round
-- Use real IPL matches, years, scores
-- Reference actual player names and events
-- Both teams get equal roast quality — make it fair but brutal
-${memCtx ? "Context: " + memCtx : ""}`;
-
-  return callClaude(sys, "Generate the full roast battle. Make it entertainment-grade, historically accurate, and escalating.", apiKey);
-}
-
-// Tool 6 — Fact Checker
-async function toolFactCheck(claim, apiKey) {
+async function toolExplain(input, pressure, momentum, memCtx) {
   try {
-    console.log("🔍 Fact-checking claim:", claim);
-
-    // Call backend API
-    const response = await fetch("http://localhost:5000/api/fact-check", {
+    const res = await fetch("http://localhost:5000/api/explain", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input, pressure, momentum, memCtx }),
+    });
+    const data = await res.json();
+    return data.explanation || "Analysis failed.";
+  } catch (err) {
+    return "Error connecting to analysis engine.";
+  }
+}
+
+// Tool 4 — Cheer Bot / Roast Generator
+async function toolCheerBot(teamUser, teamOpp, memCtx) {
+  try {
+    const res = await fetch("http://localhost:5000/api/roast", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ 
+        teamUser: TEAMS[teamUser]?.name, 
+        teamOpp: TEAMS[teamOpp]?.name, 
+        memCtx,
+        persona: TEAM_PERSONAS[teamUser]
+      }),
+    });
+    const data = await res.json();
+    return data.roast || "Roast failed.";
+  } catch (err) {
+    return "Error connecting to roast engine.";
+  }
+}
+
+// Tool 5 — Roast Battle Engine
+async function toolRoastBattle(teamUser, teamOpp, memCtx) {
+  try {
+    const res = await fetch("http://localhost:5000/api/battle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ 
+        teamUser: TEAMS[teamUser]?.name, 
+        teamOpp: TEAMS[teamOpp]?.name, 
+        memCtx 
+      }),
+    });
+    const data = await res.json();
+    return data.battle || "Battle failed.";
+  } catch (err) {
+    return "Error connecting to battle engine.";
+  }
+}
+
+// Tool 6 — Fact Checker (Backend Integration)
+async function toolFactCheck(claim) {
+  try {
+    const res = await fetch("http://localhost:5000/api/fact-check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ claim }),
     });
-
-    const data = await response.json();
-    console.log("✅ Backend response:", data);
-
+    
+    if (!res.ok) throw new Error("Backend server not responding");
+    
+    const data = await res.json();
     return { 
-      valid: data.valid, 
-      reason: data.reason,
-      claim: data.claim 
+      valid: data.verdict === "TRUE", 
+      verdict: data.verdict, 
+      reason: data.explanation 
     };
-  } catch (error) {
-    console.error("❌ Fact-check error:", error);
-    return {
-      valid: false,
-      reason: `Error: ${error.message}. Make sure backend server is running on http://localhost:5000`,
-      claim: claim
+  } catch (err) {
+    console.error("Fact Check Error:", err);
+    return { 
+      valid: false, 
+      verdict: "UNKNOWN", 
+      reason: "Could not reach the fact-checking backend. Ensure it is running on port 5000." 
     };
   }
 }
@@ -511,20 +502,20 @@ async function orchestratorAgent(input, memory, onStep) {
 
   // ── Tool 3: Explanation Generator ──
   if (input.task === "analyze") {
-    think(`⚙️  Tool 3: Explanation Generator (Claude) — analyzing tactical situation`);
-    result.explanation = await toolExplain(input, result.pressure, result.momentum, memCtx, input.apiKey);
+    think(`⚙️  Tool 3: Explanation Generator (Backend) — analyzing tactical situation`);
+    result.explanation = await toolExplain(input, result.pressure, result.momentum, memCtx);
     think(`✅ Analysis generated — tactical explanation ready`);
   }
 
   // ── Tool 4: Cheer Bot ──
   if (input.task === "roast") {
-    think(`⚙️  Tool 4: Cheer Bot Agent — initiating 4-step reasoning chain`);
+    think(`⚙️  Tool 4: Cheer Bot Agent (Backend) — initiating reasoning chain`);
     think(`      ↳ Step 1: Profiling ${TEAMS[input.teamOpp]?.name} weaknesses`);
     think(`      ↳ Step 2: Adopting ${TEAMS[input.teamUser]?.name} voice & persona`);
     think(`      ↳ Step 3: Selecting sharpest attack angle`);
     think(`      ↳ Step 4: Crafting 4–6 line roast with real stat reference`);
 
-    const raw     = await toolCheerBot(input.teamUser, input.teamOpp, memCtx, input.apiKey);
+    const raw     = await toolCheerBot(input.teamUser, input.teamOpp, memCtx);
     const fcMatch = raw.match(/FACTCHECK_JSON:\s*(\{[\s\S]*?\})/);
     result.roast  = fcMatch ? raw.replace(/FACTCHECK_JSON:[\s\S]*/, "").trim() : raw;
 
@@ -537,29 +528,26 @@ async function orchestratorAgent(input, memory, onStep) {
 
   // ── Tool 5: Roast Battle ──
   if (input.task === "battle") {
-    think(`⚙️  Tool 5: Roast Battle Engine — 3-round escalation protocol`);
+    think(`⚙️  Tool 5: Roast Battle Engine (Backend) — 3-round escalation protocol`);
     think(`      ↳ Round 1 loading: opening salvos`);
     think(`      ↳ Round 2 loading: stat-backed counter-attacks`);
     think(`      ↳ Round 3 loading: full savage knockout mode`);
-    result.battle = await toolRoastBattle(input.teamUser, input.teamOpp, memCtx, input.apiKey);
+    result.battle = await toolRoastBattle(input.teamUser, input.teamOpp, memCtx);
     think(`✅ Battle complete — judge's verdict rendered`);
   }
 
   // ── Tool 6: Fact Checker (standalone) ──
   if (input.task === "fact-check") {
-    think(`⚙️  Tool 6: Fact Checker — cross-referencing IPL knowledge base`);
-    result.factCheck = await toolFactCheck(input.claim || "", input.apiKey);
-    think(`✅ Fact check: ${result.factCheck.valid ? "TRUE ✅" : "FALSE ❌"}`);
+    think(`⚙️  Tool 6: Fact Checker (Backend) — cross-referencing knowledge base`);
+    result.factCheck = await toolFactCheck(input.claim || "");
+    const v = result.factCheck.verdict;
+    think(`✅ Fact check: ${v === "TRUE" ? "TRUE ✅" : v === "FALSE" ? "FALSE ❌" : "UNKNOWN ❓"}`);
   }
 
   think(`🎯 Orchestrator: all tools executed | Memory updated`);
 
   // ── Update memory ──
-  if (input.task === "fact-check") {
-    memory.add({ task: input.task, claim: input.claim });
-  } else {
-    memory.add({ task: input.task, teamUser: input.teamUser, teamOpp: input.teamOpp });
-  }
+  memory.add({ task: input.task, teamUser: input.teamUser, teamOpp: input.teamOpp });
 
   return { thinking: { steps }, result };
 }
@@ -669,10 +657,6 @@ export default function CricketIntelligenceAgent() {
         setSteps
       );
       setResult(res);
-      // Clear claim after fact-check execution
-      if (task === "fact-check") {
-        setClaim("");
-      }
     } catch (err) {
       setSteps(prev => [...prev, `❌ Error: ${err.message}`]);
     } finally {
@@ -740,17 +724,7 @@ export default function CricketIntelligenceAgent() {
                 {TASKS.map(t => (
                   <button key={t.id}
                     className={`task-btn ${task === t.id ? "active" : ""}`}
-                    onClick={() => {
-                      setTask(t.id);
-                      setResult(null);
-                      setSteps([]);
-                      // Clear irrelevant fields when switching tasks
-                      if (t.id === "fact-check") {
-                        setClaim("");  // Clear claim if leaving fact-check
-                      } else {
-                        setClaim("");  // Clear claim if leaving fact-check
-                      }
-                    }}>
+                    onClick={() => { setTask(t.id); setResult(null); setSteps([]); }}>
                     <div className="task-btn-label">{t.emoji} {t.label}</div>
                     <div className="task-btn-desc">{t.desc}</div>
                   </button>
@@ -1041,9 +1015,9 @@ export default function CricketIntelligenceAgent() {
                   <div className="card card-body">
                     <div className="result-section-title">✅ FACT CHECK RESULT</div>
                     <div style={{ display:"flex", alignItems:"center", gap:14, marginBottom:14 }}>
-                      <span className={`badge ${result.factCheck.valid ? "badge-ok" : "badge-warn"}`}
+                      <span className={`badge ${result.factCheck.verdict === "TRUE" ? "badge-ok" : result.factCheck.verdict === "FALSE" ? "badge-warn" : "badge-neutral"}`}
                         style={{ fontSize:15, padding:"7px 20px" }}>
-                        {result.factCheck.valid ? "✅ TRUE" : "❌ FALSE"}
+                        {result.factCheck.verdict === "TRUE" ? "✅ TRUE" : result.factCheck.verdict === "FALSE" ? "❌ FALSE" : "❓ UNKNOWN"}
                       </span>
                     </div>
                     <p style={{ fontSize:15, lineHeight:1.75, color:"var(--text)" }}>
