@@ -302,7 +302,7 @@ const TASKS = [
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const CLAUDE_MODEL  = "anthropic/claude-3-haiku";
-const BACKEND_URL   = import.meta.env.VITE_BACKEND_URL || (window.location.hostname === 'localhost' ? "http://localhost:5000" : "");
+const BACKEND_URL   = import.meta.env.VITE_BACKEND_URL || (window.location.port === '5173' ? "http://localhost:5000" : "");
 
 // ─────────────────────────────────────────────────────────────────
 //  TOOL 1 — Pressure Calculator (pure function)
